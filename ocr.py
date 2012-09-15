@@ -138,7 +138,7 @@ def process(input_file, output_file, lang='eng', jobs=4):
         for idx, image in enumerate(images, start=1):
             queue.put((idx, image))
         queue.join()
-        pages = glob(os.path.join(tmp, '*.pdf'))
+        pages = sorted(glob(os.path.join(tmp, '*.pdf')))
         logging.info("OCR complete. Merging into '{}'".format(output_file))
         merge_pdf(pages, output_file)
         check_call(['ls', '-lh', input_file, output_file])
