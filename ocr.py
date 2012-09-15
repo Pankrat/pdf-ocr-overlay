@@ -27,14 +27,17 @@ import logging
 import os
 from Queue import Queue
 from shutil import rmtree
-from subprocess import check_call, check_output
+from subprocess import check_call, check_output, Popen, PIPE
 from tempfile import mkdtemp
 from threading import Thread
 import time
 
+
 logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s (%(threadName)-2s) %(message)s',
+                    format='%(asctime)s [%(levelname)s] %(message)s',
+                    datefmt='%H:%M:%S',
                     )
+
 
 class Timer:
     def __enter__(self):
@@ -44,6 +47,35 @@ class Timer:
     def __exit__(self, *args):
         self.end = time.time()
         self.interval = self.end - self.start
+
+
+def system_info():
+    deps = []
+
+    pdfimages = Popen(['pdfimages', '-v'], stderr=PIPE).communicate()[1]
+    deps.append(('pdfimages', pdfimages.split('\n')[0]))
+
+    tesseract = Popen(['tesseract', '-v'], stderr=PIPE).communicate()[1]
+    deps.append(('tesseract', tesseract.split('\n')[0]))
+
+    # hocr2pdf doesn't support a --version flag but prints the version to
+    # stderr if called without arguments
+    hocr2pdf = Popen(['hocr2pdf', '--help'], stdout=PIPE, stderr=PIPE)
+    hocr2pdf = hocr2pdf.communicate()[1]
+    hocr2pdf = [line for line in hocr2pdf if 'version' in line]
+    if hocr2pdf:
+        deps.append(('hocr2pdf', hocr2pdf))
+
+    gs = check_output(['gs', '--version']).split('\n')[0]
+    deps.append(('gs', gs))
+
+    identify = check_output(['identify', '--version']).split('\n')[0]
+    deps.append(('identify', identify))
+
+    convert = check_output(['convert', '--version']).split('\n')[0]
+    deps.append(('convert', convert))
+
+    return deps
 
 
 def extract_images(pdf, output):
@@ -95,14 +127,21 @@ def ocr_page(image, lang='eng', width=-1, height=-1):
 
 
 def process_page(index, queue, lang, resolution):
+    """
+    Pull page from the queue and perform OCR. Make sure to acknowledge the
+    message in the queue even if there is an exception so that the main thread
+    does not block on a queue that will never be empty.
+    """
     while True:
         page, image = queue.get()
-        logging.info("Page {:>2}: Run OCR ...".format(page))
-        width, height = resolution[page-1]
-        with Timer() as t:
-            ocr_page(image, lang=lang, width=width, height=height)
-        logging.info("Page {:>2}: OCR took {:.2f}s".format(page, t.interval))
-        queue.task_done()
+        try:
+            logging.info("Page {:>2}: Run OCR ...".format(page))
+            width, height = resolution[page-1]
+            with Timer() as t:
+                ocr_page(image, lang=lang, width=width, height=height)
+            logging.info("Page {:>2}: OCR took {:.2f}s".format(page, t.interval))
+        finally:
+            queue.task_done()
 
 
 def merge_pdf(pages, output_filename):
@@ -155,4 +194,6 @@ if __name__ == '__main__':
     parser.add_argument('-j', '--jobs', default=4, type=int,
                         help='Specifies the number of pages to process simultaneously')
     args = parser.parse_args()
+    for name, version in system_info():
+        logging.info('{:<12}: {}'.format(name, version))
     process(args.input[0], args.output[0], lang=args.lang, jobs=args.jobs)
