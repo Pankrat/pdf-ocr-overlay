@@ -103,7 +103,36 @@ def get_resolution(filename):
     """
     pages = check_output(["identify", "-format", "%w,%h;", filename])
     pages = [page.split(',') for page in pages.split(';') if page.strip()]
-    return [(int(x), int(y)) for x, y in pages]
+    pages = [(int(x), int(y)) for x, y in pages]
+    return pages
+
+
+PAPER_SIZES = {
+    (841, 1189): 'A0',
+    (594, 841): 'A1',
+    (420, 594): 'A2',
+    (297, 420): 'A3',
+    (210, 297): 'A4',
+    (148, 210): 'A5',
+    (105, 148): 'A6',
+    ( 74, 105): 'A7',
+    ( 52,  74): 'A8',
+    (250, 353): 'B4',
+    (176, 250): 'B5',
+    (125, 176): 'B6',
+    (215, 279): 'US Letter',
+    }
+
+
+def get_paper_type(wdots, hdots):
+    w_mm = int(wdots / 7.2 * 2.54)
+    h_mm = int(hdots / 7.2 * 2.54)
+    if (w_mm, h_mm) in PAPER_SIZES:
+        return PAPER_SIZES[(w_mm, h_mm)]
+    elif (h_mm, w_mm) in PAPER_SIZES:
+        return PAPER_SIZES[(h_mm, w_mm)] + ', landscape'
+    else:
+        return ''
 
 
 def ocr_page(image, lang='eng', width=-1, height=-1):
@@ -119,6 +148,10 @@ def ocr_page(image, lang='eng', width=-1, height=-1):
     devnull = open('/dev/null', 'w')
     check_call(["tesseract", png, base, '-l', lang, 'hocr'],
                stdout=devnull)
+    # Reduce resolution of images to 1/2 that have 600dpi or more.
+    if dpi_w >= 600:
+        check_call(["mogrify", "-resize", "50%", png])
+        dpi_w = dpi_w / 2
     html = os.open(hocr, os.O_RDONLY)
     check_call(['hocr2pdf', '-r', str(dpi_w), '-i', png, '-o', pdf],
                stdin=html)
@@ -150,6 +183,7 @@ def merge_pdf(pages, output_filename):
                 '-dNOPAUSE',
                 '-dBATCH',
                 '-sDEVICE=pdfwrite',
+                '-dCompatibilityLevel=1.4',
                 '-sOutputFile={}'.format(output_filename)] +
                pages,
                )
@@ -167,18 +201,23 @@ def process(input_file, output_file, lang='eng', jobs=4):
     tmp = os.path.join(mkdtemp(), '')
     try:
         resolution = get_resolution(input_file)
-        logging.info("Extract pages ...")
+        w, h = resolution[0]
+        logging.info("{} pages, {}mm*{}mm {}".format(len(resolution),
+                                                     int(w / 7.2 * 2.54),
+                                                     int(h / 7.2 * 2.54),
+                                                     get_paper_type(w, h)))
+        logging.info("Extract pages from {}".format(input_file))
         images = extract_images(input_file, tmp)
         num_workers = min(len(images), jobs)
         queue = Queue()
         start_workers(num_workers, queue, lang, resolution)
-        logging.info("Process {} pages with {} threads ...".format(len(images),
+        logging.info("Process {} pages with {} threads".format(len(images),
                                                                    num_workers))
         for idx, image in enumerate(images, start=1):
             queue.put((idx, image))
         queue.join()
         pages = sorted(glob(os.path.join(tmp, '*.pdf')))
-        logging.info("OCR complete. Merging into '{}'".format(output_file))
+        logging.info("OCR complete. Merge pages into '{}'".format(output_file))
         merge_pdf(pages, output_file)
         check_call(['ls', '-lh', input_file, output_file])
     finally:
